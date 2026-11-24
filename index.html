@@ -55,4 +55,225 @@ function generateLetter(){let p=prop($('#letterProperty').value);if(!p){notify('
 async function copyLetter(){let t=$('#letterText');try{await navigator.clipboard.writeText(t.value);notify('Text kopiert')}catch{t.select();notify('Text markiert – bitte kopieren')}}
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{tab=b.dataset.tab;render()});$('#logout').onclick=async()=>{let {error}=await client.auth.signOut();if(error)fail(error)};
 (async()=>{try{if(!window.supabase)throw Error('Supabase-Bibliothek konnte nicht geladen werden');client=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);client.auth.onAuthStateChange((event,session)=>{if(event==='INITIAL_SESSION'||event==='SIGNED_IN'||event==='SIGNED_OUT')setTimeout(()=>sessionChanged(session),0);if(event==='PASSWORD_RECOVERY')setTimeout(()=>{let password=prompt('Neues Passwort (mindestens 6 Zeichen):');if(password&&password.length>=6)client.auth.updateUser({password}).then(({error})=>error?fail(error):notify('Passwort geändert'))},0)});}catch(e){$('#screen').innerHTML='<div class="panel">Startfehler: '+esc(e.message)+'</div>'}})();
-</script></body></html>
+
+</script>
+<script>
+const originalRefresh = refresh;
+const originalRender = render;
+
+function localDamages() {
+  const data = JSON.parse(localStorage.getItem(localKey()) || '{}');
+  return data.damages || [];
+}
+
+saveLocal = function() {
+  localStorage.setItem(localKey(), JSON.stringify({
+    damages: localDamages(),
+    docs: state.docs,
+    plan: demoPlan
+  }));
+  render();
+};
+
+async function loadDamages() {
+  const uid = user.id;
+  const {data,error} = await client
+    .from('damages')
+    .select('*')
+    .eq('user_id',uid)
+    .order('damage_date',{ascending:false});
+
+  if(error) throw error;
+  if(user?.id !== uid) return;
+
+  state.damages = (data || []).map(d => ({
+    id:d.id,
+    propertyId:d.property_id,
+    title:d.title,
+    description:d.description,
+    date:d.damage_date,
+    status:({
+      'offen':'Offen',
+      'in bearbeitung':'In Bearbeitung',
+      'erledigt':'Erledigt'
+    })[String(d.status).toLowerCase()] || d.status
+  }));
+}
+
+refresh = async function() {
+  await originalRefresh();
+  if(!user) return;
+  await loadDamages();
+  render();
+};
+
+render = function() {
+  originalRender();
+  if(!user || tab !== 'damage') return;
+
+  const notice = $('#screen .notice');
+  if(notice) {
+    notice.textContent =
+      'Schadensmeldungen werden online in Supabase gespeichert. Bitte zunächst nur Testdaten verwenden.';
+
+    if(localDamages().length) {
+      const button = document.createElement('button');
+      button.className = 'btn secondary small';
+      button.style.marginTop = '10px';
+      button.textContent = 'Alte lokale Schäden übernehmen';
+      button.onclick = migrateDamages;
+      notice.appendChild(document.createElement('br'));
+      notice.appendChild(button);
+    }
+  }
+};
+
+async function migrateDamages() {
+  if(busy || !user) return;
+  if(!confirm('Lokale Schäden in Supabase übernehmen?')) return;
+  busy = true;
+  const uid = user.id;
+
+  try {
+    const pending = localDamages();
+    for(const d of pending) {
+      if(!prop(d.propertyId)) continue;
+
+      const {error} = await client.from('damages').upsert({
+        id:d.id,
+        user_id:uid,
+        property_id:d.propertyId,
+        title:d.title,
+        description:d.description || '',
+        damage_date:d.date,
+        status:String(d.status || 'offen').toLowerCase()
+      },{onConflict:'id',ignoreDuplicates:true});
+
+      if(error) throw error;
+      if(user?.id !== uid) return;
+    }
+
+    await loadDamages();
+    if(user?.id !== uid) return;
+
+    const saved = new Set(state.damages.map(d => d.id));
+    const data = JSON.parse(localStorage.getItem(localKey()) || '{}');
+    data.damages = pending.filter(d => !saved.has(d.id));
+    localStorage.setItem(localKey(),JSON.stringify(data));
+    render();
+
+    notify(data.damages.length
+      ? 'Einige lokale Schäden konnten nicht übernommen werden'
+      : 'Lokale Schäden übernommen');
+
+  } catch(e) {
+    fail(e);
+  } finally {
+    busy = false;
+  }
+}
+
+const originalDamageForm = damageForm;
+
+damageForm = function(id) {
+  originalDamageForm(id);
+  const form = $('#damageForm');
+  if(!form || !user) return;
+  const uid = user.id;
+
+  form.onsubmit = async function(e) {
+    e.preventDefault();
+    if(busy || user?.id !== uid) return;
+    busy = true;
+
+    try {
+      const f = new FormData(e.target);
+      const data = {
+        property_id:String(f.get('propertyId')),
+        title:String(f.get('title')).trim(),
+        damage_date:String(f.get('date')),
+        status:String(f.get('status')).toLowerCase(),
+        description:String(f.get('description')).trim()
+      };
+
+      if(!prop(data.property_id))
+        throw Error('Ungültige Immobilie');
+
+      if(!data.title)
+        throw Error('Bitte Schadenstitel eingeben');
+
+      const result = id
+        ? await client.from('damages')
+            .update(data)
+            .eq('id',id)
+            .eq('user_id',uid)
+            .select('id').single()
+        : await client.from('damages')
+            .insert({...data,user_id:uid})
+            .select('id').single();
+
+      if(result.error) throw result.error;
+      if(user?.id !== uid) return;
+
+      closeModal();
+      await loadDamages();
+      render();
+      notify('Schaden in Supabase gespeichert');
+
+    } catch(err) {
+      fail(err);
+    } finally {
+      busy = false;
+    }
+  };
+};
+
+deleteDamage = async function(id) {
+  if(busy || !user) return;
+  if(!confirm('Schaden endgültig löschen?')) return;
+
+  busy = true;
+  const uid = user.id;
+
+  try {
+    const {error} = await client.from('damages')
+      .delete()
+      .eq('id',id)
+      .eq('user_id',uid)
+      .select('id').single();
+
+    if(error) throw error;
+    if(user?.id !== uid) return;
+
+    await loadDamages();
+    render();
+    notify('Schaden gelöscht');
+
+  } catch(e) {
+    fail(e);
+  } finally {
+    busy = false;
+  }
+};
+
+const originalDeleteProperty = deleteProperty;
+
+deleteProperty = async function(id) {
+  try {
+    await loadDamages();
+
+    if(state.damages.some(d => d.propertyId === id) ||
+       localDamages().some(d => d.propertyId === id)) {
+      notify('Bitte zuerst die zugehörigen Schäden bearbeiten oder löschen.');
+      return;
+    }
+
+    await originalDeleteProperty(id);
+  } catch(e) {
+    fail(e);
+  }
+};
+</script>
+</body>
+</html>
+
