@@ -26,7 +26,29 @@ function opts(id){return state.properties.map(p=>`<option value="${esc(p.id)}" $
 function fail(e){console.error(e);notify('Fehler: '+(e.message||'Unbekannt'))}
 async function refresh(){const [pr,pa,te]=await Promise.all([client.from('properties').select('id,name,address,monthly_rent,created_at').order('created_at',{ascending:true}),client.from('rent_payments').select('id,property_id,user_id,month,amount,paid,created_at').eq('user_id',user.id).order('month',{ascending:false}),client.from('tenants').select('id,user_id,property_id,full_name,lease_start,base_rent,utilities,deposit,created_at').eq('user_id',user.id).order('created_at',{ascending:true})]);if(te.error)throw te.error;state.tenants=te.data||[];if(pr.error)throw pr.error;if(pa.error)throw pa.error;state.payments=pa.data||[];state.properties=(pr.data||[]).map(p=>({...p,city:p.address||'',rent:Number(p.monthly_rent)}));await loadFiles();render()}
 const DOC_BUCKET='documents';
-async function loadFiles(){state.files=[];for(const p of state.properties){const {data,error}=await client.storage.from(DOC_BUCKET).list(user.id+'/'+p.id,{limit:100,sortBy:{column:'created_at',order:'desc'}});if(error)throw error;for(const f of data||[]){if(!f.id)continue;state.files.push({path:user.id+'/'+p.id+'/'+f.name,propertyId:p.id,name:f.name,created_at:f.created_at})}}}
+  async function loadFiles(){
+  const files = new Map();
+  for(const p of state.properties){
+    const {data,error} = await client.storage
+      .from(DOC_BUCKET)
+      .list(user.id+'/'+p.id,{
+        limit:100,
+        sortBy:{column:'created_at',order:'desc'}
+      });
+    if(error) throw error;
+    for(const f of data||[]){
+      if(!f.id) continue;
+      const path = user.id+'/'+p.id+'/'+f.name;
+      files.set(path,{
+        path,
+        propertyId:p.id,
+        name:f.name,
+        created_at:f.created_at
+      });
+    }
+  }
+  state.files = Array.from(files.values());
+}
 async function uploadDocument(event){event.preventDefault();if(busy)return;const f=new FormData(event.target),file=f.get('file'),propertyId=String(f.get('propertyId'));if(!prop(propertyId)){notify('Bitte zuerst eine Immobilie auswählen');return}if(!(file instanceof File)||!file.size){notify('Bitte Datei auswählen');return}if(file.size>10*1024*1024){notify('Maximal 10 MB pro Datei');return}const ext=(file.name.split('.').pop()||'').toLowerCase(),allowed=['pdf','png','jpg','jpeg','webp'];if(!allowed.includes(ext)){notify('Nur PDF, JPG, PNG oder WebP erlaubt');return}busy=true;try{const safeName=file.name.replace(/[^a-zA-Z0-9._-]/g,'_').slice(-90);const path=user.id+'/'+propertyId+'/'+crypto.randomUUID()+'_'+safeName;const {error}=await client.storage.from(DOC_BUCKET).upload(path,file,{contentType:file.type||({pdf:'application/pdf',jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',webp:'image/webp'}[ext]),upsert:false});if(error)throw error;closeModal();await loadFiles();render();notify('Datei privat gespeichert')}catch(e){fail(e)}finally{busy=false}}
 function uploadForm(){if(!state.properties.length){notify('Bitte zuerst eine Immobilie anlegen');return}openModal('Datei hochladen',`<form id="uploadForm"><label>Immobilie</label><select name="propertyId" required>${opts(state.properties[0].id)}</select><label>PDF oder Bild (max. 10 MB)</label><input type="file" name="file" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp" required><div class="actions"><button class="btn" type="submit">Privat hochladen</button></div></form>`);$('#uploadForm').onsubmit=uploadDocument}
 async function openDocument(path){try{const {data,error}=await client.storage.from(DOC_BUCKET).createSignedUrl(path,60);if(error)throw error;window.open(data.signedUrl,'_blank','noopener,noreferrer')}catch(e){fail(e)}}
