@@ -324,6 +324,104 @@ deleteProperty = async function(id) {
   }
 };
 </script>
+<script>
+const renderBeforeQuota = render;
+let quotaBusy = false;
+
+async function updateAiQuota() {
+  const box = document.getElementById('aiQuota');
+  if (!box || !user) return;
+
+  const uid = user.id;
+
+  try {
+    const {data,error} = await client.rpc('get_ai_usage');
+
+    if(error) throw error;
+    if(user?.id !== uid || !box.isConnected) return;
+
+    const used = Number(data.used);
+    const limit = Number(data.limit);
+    const remaining = Number(data.remaining);
+    const percent = Math.min(100, used / limit * 100);
+
+    box.innerHTML = `
+      <div class="flex">
+        <b>Dein KI-Kontingent</b>
+        <span class="pill">Free</span>
+      </div>
+      <div class="big">${remaining} von ${limit}</div>
+      <div class="muted">KI-Anfragen verfügbar</div>
+      <div style="background:#e6ebf2;height:9px;border-radius:10px;margin:14px 0;overflow:hidden">
+        <div style="background:${remaining===0?'#d99a27':'#175c9e'};width:${percent}%;height:100%"></div>
+      </div>
+      <div class="muted">${used} von ${limit} Anfragen verbraucht</div>
+      ${remaining===0
+        ? '<p style="color:#936200;font-weight:700">Dein monatliches KI-Limit ist erreicht.</p>'
+        : ''}
+      <p class="muted">Dein Kontingent erneuert sich jeden Monat.</p>
+      <button class="btn secondary small" onclick="tab='plans';render()">Tarife entdecken</button>
+    `;
+
+    const button = $('#generateLetterButton');
+
+    if(button && !quotaBusy) {
+      button.disabled = remaining === 0;
+      button.style.opacity = remaining === 0 ? '0.5' : '1';
+      button.textContent = remaining === 0
+        ? 'Monatslimit erreicht'
+        : 'KI-Schreiben erstellen';
+    }
+
+    return data;
+
+  } catch(e) {
+    if(box.isConnected) {
+      box.textContent = 'KI-Kontingent konnte nicht geladen werden.';
+    }
+  }
+}
+
+render = function() {
+  renderBeforeQuota();
+
+  if(!user || tab !== 'letters') return;
+
+  const box = document.createElement('div');
+  box.id = 'aiQuota';
+  box.className = 'panel';
+  box.textContent = 'Lade KI-Kontingent ...';
+
+  const heading = $('#screen .heading');
+  if(heading) heading.after(box);
+
+  updateAiQuota();
+};
+
+const generateBeforeQuota = generateLetter;
+
+generateLetter = async function() {
+  if(quotaBusy || !user) return;
+
+  quotaBusy = true;
+
+  try {
+    await generateBeforeQuota();
+  } finally {
+    quotaBusy = false;
+
+    const data = await updateAiQuota();
+    const output = $('#letterOutput');
+
+    if(data?.remaining === 0 &&
+       output &&
+       !$('#letterText')) {
+      output.textContent =
+        'Dein monatliches KI-Kontingent ist aufgebraucht.';
+    }
+  }
+};
+</script>
 </body>
 </html>
 
