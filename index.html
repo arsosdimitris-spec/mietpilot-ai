@@ -422,6 +422,120 @@ generateLetter = async function() {
   }
 };
 </script>
+  <script>
+const renderBeforePlans = render;
+
+async function loadRealPlans() {
+  const box = document.getElementById('realPlans');
+  if (!box || !user) return;
+
+  const uid = user.id;
+
+  try {
+    const [plans, usage] = await Promise.all([
+      client.from('subscription_plans')
+        .select('*')
+        .order('price_cents'),
+      client.rpc('get_ai_usage')
+    ]);
+
+    if (plans.error) throw plans.error;
+    if (usage.error) throw usage.error;
+    if (user?.id !== uid || !box.isConnected) return;
+
+    box.innerHTML = `
+      <div class="notice">
+        Dein Tarif wird sicher in Supabase verwaltet.
+        Kostenpflichtige Abonnements sind demnächst verfügbar.
+      </div>
+    `;
+
+    for (const p of plans.data) {
+      const active = p.name === usage.data.plan;
+
+      const price = (p.price_cents / 100)
+        .toLocaleString('de-DE', {
+          style: 'currency',
+          currency: 'EUR'
+        });
+
+      box.innerHTML += `
+        <div class="panel">
+          <div class="flex">
+            <h3>${esc(p.name)}</h3>
+            ${active
+              ? '<span class="pill paid">Aktueller Tarif</span>'
+              : ''}
+          </div>
+
+          <div class="big">${price}</div>
+          <div class="muted">pro Monat</div>
+
+          <div class="rowline">
+            <p>✓ ${p.ai_limit} KI-Anfragen pro Monat</p>
+            <p>✓ ${p.property_limit === null
+              ? 'Unbegrenzte Immobilien'
+              : p.property_limit + ' Immobilien'}</p>
+            <p>✓ ${p.storage_limit_mb >= 1024
+              ? p.storage_limit_mb / 1024 + ' GB'
+              : p.storage_limit_mb + ' MB'} Dokumentenspeicher</p>
+            <p>✓ Mieterverwaltung</p>
+            <p>✓ Mietzahlungsübersicht</p>
+            <p>✓ Schadensverwaltung</p>
+          </div>
+
+          <button class="btn secondary"
+            style="width:100%;opacity:0.8"
+            disabled>
+            ${active
+              ? 'Dein aktueller Tarif'
+              : 'Demnächst verfügbar'}
+          </button>
+        </div>
+      `;
+    }
+
+  } catch(e) {
+    if (box.isConnected) {
+      box.textContent =
+        'Tarife konnten nicht geladen werden.';
+    }
+  }
+}
+
+render = function() {
+  renderBeforePlans();
+
+  if (!user) return;
+
+  if (tab === 'plans') {
+    $('#screen').innerHTML = `
+      <div class="heading">MietPilot AI Tarife</div>
+      <div id="realPlans">Lade deine Tarife ...</div>
+    `;
+
+    loadRealPlans();
+  }
+};
+
+const updateQuotaBeforePlans = updateAiQuota;
+
+updateAiQuota = async function() {
+  const box = $('#aiQuota');
+  const uid = user?.id;
+  const data = await updateQuotaBeforePlans();
+
+  if (data && user?.id === uid && box?.isConnected) {
+    const pill = box.querySelector('.pill');
+
+    if (pill) {
+      pill.textContent = data.plan || 'Free';
+    }
+  }
+
+  return data;
+};
+</script>
 </body>
 </html>
 
